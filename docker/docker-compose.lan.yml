@@ -1,0 +1,36 @@
+# Lab 02 — External Dependencies: iredmail with external PostgreSQL and Redis
+---
+services:
+  iredmail:
+    image: iredmail/iredmail:stable
+    container_name: it-stack-iredmail
+    restart: unless-stopped
+    ports:
+      - "25:$firstPort"
+    environment:
+      - IT_STACK_ENV=lab-02-lan
+      - DB_HOST=
+      - DB_PORT=5432
+      - REDIS_HOST=
+    networks:
+      - it-stack-net
+
+  # Lightweight local DB for lab (replace with lab-db1 in real env)
+  postgres:
+    image: postgres:16
+    container_name: it-stack-iredmail-db
+    environment:
+      POSTGRES_DB: iredmail_db
+      POSTGRES_USER: iredmail_user
+      POSTGRES_PASSWORD: iredmail_pass
+    volumes:
+      - iredmail_pg_data:/var/lib/postgresql/data
+    networks:
+      - it-stack-net
+
+networks:
+  it-stack-net:
+    driver: bridge
+
+volumes:
+  iredmail_pg_data:
