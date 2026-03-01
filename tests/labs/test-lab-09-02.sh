@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # test-lab-09-02.sh — Lab 09-02: External Dependencies
 # Module 09: iRedMail — OpenLDAP directory, mailhog SMTP relay, separate networks
 set -euo pipefail
