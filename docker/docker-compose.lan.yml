@@ -1,36 +1,103 @@
-# Lab 02 — External Dependencies: iredmail with external PostgreSQL and Redis
----
-services:
-  iredmail:
-    image: iredmail/iredmail:stable
-    container_name: it-stack-iredmail
-    restart: unless-stopped
-    ports:
-      - "25:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-02-lan
-      - DB_HOST=
-      - DB_PORT=5432
-      - REDIS_HOST=
-    networks:
-      - it-stack-net
-
-  # Lightweight local DB for lab (replace with lab-db1 in real env)
-  postgres:
-    image: postgres:16
-    container_name: it-stack-iredmail-db
-    environment:
-      POSTGRES_DB: iredmail_db
-      POSTGRES_USER: iredmail_user
-      POSTGRES_PASSWORD: iredmail_pass
-    volumes:
-      - iredmail_pg_data:/var/lib/postgresql/data
-    networks:
-      - it-stack-net
+# =============================================================================
+# IT-Stack — iRedMail — Lab 02: External Dependencies
+# =============================================================================
+# Adds an external OpenLDAP directory server and a mailhog SMTP relay.
+# Separate networks isolate the directory (mail-dir-net) from the mail
+# plane (mail-app-net).
+#
+# Services:
+#   ldap        — osixia/openldap 1.5.0  (port 389)
+#   smtp-relay  — Mailhog 1.0.1  (:8025 web UI, :1025 SMTP)
+#   iredmail    — iredmail/iredmail:stable all-in-one  (:9080, :9025, etc.)
+#
+# Usage:
+#   docker compose -f docker/docker-compose.lan.yml up -d
+#   docker compose -f docker/docker-compose.lan.yml down -v
+# =============================================================================
 
 networks:
-  it-stack-net:
+  mail-app-net:
+    driver: bridge
+  mail-dir-net:
     driver: bridge
 
 volumes:
-  iredmail_pg_data:
+  iredmail-lan-data:
+  iredmail-lan-mysql:
+  iredmail-lan-log:
+  iredmail-lan-ldap:
+
+services:
+
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: iredmail-lan-ldap
+    environment:
+      LDAP_ORGANISATION: "IT-Stack Lab"
+      LDAP_DOMAIN: "lab.local"
+      LDAP_BASE_DN: "dc=lab,dc=local"
+      LDAP_ADMIN_PASSWORD: "Lab02Password!"
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: "readonly"
+      LDAP_READONLY_USER_PASSWORD: "Lab02Readonly!"
+      LDAP_TLS: "false"
+    ports:
+      - "389:389"
+    volumes:
+      - iredmail-lan-ldap:/var/lib/ldap
+    networks:
+      - mail-dir-net
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -D 'cn=admin,dc=lab,dc=local' -w 'Lab02Password!' -b 'dc=lab,dc=local' '(objectClass=*)' dn 2>&1 | grep -q 'result: 0'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  smtp-relay:
+    image: mailhog/mailhog:v1.0.1
+    container_name: iredmail-lan-smtp-relay
+    ports:
+      - "8025:8025"    # Mailhog web UI
+    networks:
+      - mail-app-net
+    restart: unless-stopped
+
+  iredmail:
+    image: iredmail/iredmail:stable
+    container_name: iredmail-lan-app
+    hostname: mail.lab.local
+    ports:
+      - "9080:80"
+      - "9443:443"
+      - "9025:25"
+      - "9587:587"
+      - "9143:143"
+      - "9993:993"
+    environment:
+      FIRST_MAIL_DOMAIN: lab.local
+      FIRST_MAIL_DOMAIN_ADMIN_PASSWORD: Lab02Password!
+      # LDAP directory integration
+      LDAP_HOST: ldap
+      LDAP_PORT: "389"
+      LDAP_BASE_DN: "dc=lab,dc=local"
+      LDAP_BIND_DN: "cn=readonly,dc=lab,dc=local"
+      LDAP_BIND_PASSWORD: "Lab02Readonly!"
+    volumes:
+      - iredmail-lan-data:/var/vmail
+      - iredmail-lan-mysql:/var/lib/mysql
+      - iredmail-lan-log:/var/log
+    networks:
+      - mail-app-net
+      - mail-dir-net
+    depends_on:
+      ldap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/mail/ | grep -qi 'roundcube\|login'"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
