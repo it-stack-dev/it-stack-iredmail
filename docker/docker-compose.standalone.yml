@@ -1,29 +1,47 @@
-# Lab 01 — Standalone: Complete iRedMail email server in isolation
-# No external dependencies required.
+# Lab 01 — Standalone: iRedMail complete mail server
+# Self-contained — iRedMail with MariaDB. All mail services in one container.
+# Webmail: http://localhost:9080/mail  Admin: postmaster@lab.local / Lab01Password!
+# SMTP: localhost:9025  IMAP: localhost:9143  Submission: localhost:9587
 ---
 services:
   iredmail:
     image: iredmail/iredmail:stable
-    container_name: it-stack-iredmail
+    container_name: it-stack-iredmail-standalone
     restart: unless-stopped
+    hostname: mail.lab.local
     ports:
-      - "25:$firstPort"
+      - "9080:80"
+      - "9443:443"
+      - "9025:25"
+      - "9587:587"
+      - "9143:143"
+      - "9993:993"
     environment:
-      - IT_STACK_ENV=lab-01-standalone
+      FIRST_MAIL_DOMAIN: lab.local
+      FIRST_MAIL_DOMAIN_ADMIN_PASSWORD: Lab01Password!
+      HOSTNAME: mail.lab.local
     volumes:
-      - iredmail_data:/var/lib/iredmail
+      - iredmail-data:/var/vmail
+      - iredmail-mysql-data:/var/lib/mysql
+      - iredmail-log:/var/log
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost/mail || exit 1"]
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+      timeout: 15s
+      retries: 12
+      start_period: 120s
     networks:
-      - it-stack-net
+      - iredmail-standalone-net
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
 networks:
-  it-stack-net:
+  iredmail-standalone-net:
     driver: bridge
 
 volumes:
-  iredmail_data:
+  iredmail-data:
+  iredmail-mysql-data:
+  iredmail-log:
