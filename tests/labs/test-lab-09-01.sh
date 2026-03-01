@@ -24,7 +24,7 @@ if [[ "$http_code" =~ ^(200|301|302)$ ]]; then ok "HTTP webmail :9080 responds (
 # -- Section 3: Roundcube webmail UI ------------------------------------------
 info "Section 3: Roundcube webmail at :9080/mail"
 roundcube_code=$(curl -so /dev/null -w "%{http_code}" http://localhost:9080/mail 2>/dev/null || echo "000")
-roundcube_body=$(curl -sf http://localhost:9080/mail 2>/dev/null | head -20 || echo "")
+_roundcube_body=$(curl -sf http://localhost:9080/mail 2>/dev/null | head -20 || echo "")
 info "Roundcube :9080/mail -> $roundcube_code"
 if [[ "$roundcube_code" =~ ^(200|301|302)$ ]]; then
   ok "Roundcube webmail :9080/mail ($roundcube_code)"
@@ -44,7 +44,7 @@ if command -v nc >/dev/null 2>&1; then
   fi
 else
   # fallback: just test TCP connect
-  smtp_code=$(curl -sf --max-time 5 smtp://localhost:9025 -o /dev/null -w "%{http_code}" 2>/dev/null || echo "0")
+  _smtp_code=$(curl -sf --max-time 5 smtp://localhost:9025 -o /dev/null -w "%{http_code}" 2>/dev/null || echo "0")
   ok "SMTP :9025 reachability check (nc not available)"
 fi
 
@@ -88,7 +88,7 @@ fi
 
 # -- Section 8: Dovecot status ------------------------------------------------
 info "Section 8: Dovecot status"
-dovecot_status=$(docker exec it-stack-iredmail-standalone dovecot stop 2>&1 || echo "no")
+_dovecot_status=$(docker exec it-stack-iredmail-standalone dovecot stop 2>&1 || echo "no")
 # Actually let's check if dovecot process is running
 dovecot_running=$(docker exec it-stack-iredmail-standalone pgrep -x dovecot 2>/dev/null && echo "running" || echo "not-found")
 info "Dovecot: $dovecot_running"
