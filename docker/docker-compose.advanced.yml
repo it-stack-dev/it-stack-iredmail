@@ -1,34 +1,107 @@
-# Lab 03 — Advanced Features: iredmail with TLS, resource limits, logging
----
+# docker-compose.advanced.yml — Lab 09-03: Advanced Features
+# iRedMail with LDAP, DKIM, SMTP STARTTLS, and resource limits
+name: iredmail-advanced
+
 services:
-  iredmail:
-    image: iredmail/iredmail:stable
-    container_name: it-stack-iredmail
-    restart: unless-stopped
-    ports:
-      - "25:$firstPort"
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: iredmail-adv-ldap
     environment:
-      - IT_STACK_ENV=lab-03-advanced
-      - TLS_ENABLED=true
+      LDAP_ORGANISATION: "Lab Organization"
+      LDAP_DOMAIN: lab.local
+      LDAP_BASE_DN: "dc=lab,dc=local"
+      LDAP_ADMIN_PASSWORD: Lab03Password!
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnlyPass03!
+      LDAP_TLS: "false"
+    ports:
+      - "389:389"
     volumes:
-      - iredmail_data:/var/lib/iredmail
-      - ./certs:/etc/ssl/certs:ro
+      - ldap_adv_db:/var/lib/ldap
+      - ldap_adv_config:/etc/ldap/slapd.d
+    networks:
+      - mail-dir-net
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D 'cn=admin,dc=lab,dc=local' -w Lab03Password! -LLL -z 1 dn 2>/dev/null | grep -q 'dn:'"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: G
-    logging:
-      driver: json-file
-      options:
-        max-size: "100m"
-        max-file: "5"
-    networks:
-      - it-stack-net
+          cpus: "0.25"
+          memory: 256M
+    restart: unless-stopped
 
-networks:
-  it-stack-net:
-    driver: bridge
+  smtp-relay:
+    image: mailhog/mailhog:v1.0.1
+    container_name: iredmail-adv-smtp-relay
+    ports:
+      - "8025:8025"
+    networks:
+      - mail-app-net
+    restart: unless-stopped
+
+  iredmail:
+    image: iredmail/mariadb:stable
+    container_name: iredmail-adv-app
+    hostname: mail.lab.local
+    ports:
+      - "9080:80"
+      - "9443:443"
+      - "9025:25"
+      - "9587:587"
+      - "9143:143"
+      - "9993:993"
+    environment:
+      FIRST_MAIL_DOMAIN: lab.local
+      FIRST_MAIL_DOMAIN_ADMIN_PASSWORD: Lab03Password!
+      MLMMJADMIN_API_TOKEN: Lab03Token!
+      ROUNDCUBE_DES_KEY: Lab03RoundcubeDesKey01
+      LDAP_SERVER_HOST: ldap
+      LDAP_SERVER_PORT: "389"
+      LDAP_BIND_DN: "cn=readonly,dc=lab,dc=local"
+      LDAP_BIND_PASSWORD: ReadOnlyPass03!
+      LDAP_BASE_DN: "dc=lab,dc=local"
+      ENABLE_DKIM: "1"
+      DKIM_SELECTOR: lab
+      POSTFIX_RELAYHOST: "[smtp-relay]:1025"
+    volumes:
+      - iredmail_adv_data:/var/vmail
+      - iredmail_adv_db:/var/lib/mysql
+      - iredmail_adv_clamav:/var/lib/clamav
+      - iredmail_adv_ssl:/opt/iredmail/ssl
+      - iredmail_adv_dkim:/opt/dkim
+    networks:
+      - mail-app-net
+      - mail-dir-net
+    depends_on:
+      ldap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/mail/ | grep -qi 'roundcube\\|webmail\\|login'"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    restart: unless-stopped
 
 volumes:
-  iredmail_data:
+  ldap_adv_db:
+  ldap_adv_config:
+  iredmail_adv_data:
+  iredmail_adv_db:
+  iredmail_adv_clamav:
+  iredmail_adv_ssl:
+  iredmail_adv_dkim:
+
+networks:
+  mail-app-net:
+  mail-dir-net:
