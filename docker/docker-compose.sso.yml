@@ -1,34 +1,141 @@
-# Lab 04 — SSO Integration: iredmail with Keycloak OIDC authentication
----
-services:
-  iredmail:
-    image: iredmail/iredmail:stable
-    container_name: it-stack-iredmail
-    restart: unless-stopped
-    ports:
-      - "25:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-04-sso
-      - KEYCLOAK_URL=
-      - KEYCLOAK_REALM=
-      - KEYCLOAK_CLIENT_ID=iredmail
-      - KEYCLOAK_CLIENT_SECRET=
-    networks:
-      - it-stack-net
+# docker-compose.sso.yml — Lab 09-04: SSO Integration
+# iRedMail with Keycloak LDAP user federation (Keycloak federates from OpenLDAP)
+name: iredmail-sso
 
-  # Local Keycloak for SSO lab (replace with lab-id1 in real env)
+services:
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: iredmail-sso-ldap
+    environment:
+      LDAP_ORGANISATION: "Lab Organization"
+      LDAP_DOMAIN: lab.local
+      LDAP_BASE_DN: "dc=lab,dc=local"
+      LDAP_ADMIN_PASSWORD: Lab04Password!
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnlyPass04!
+      LDAP_TLS: "false"
+    ports:
+      - "389:389"
+    volumes:
+      - ldap_sso_db:/var/lib/ldap
+      - ldap_sso_config:/etc/ldap/slapd.d
+    networks:
+      - mail-dir-net
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D 'cn=admin,dc=lab,dc=local' -w Lab04Password! -LLL -z 1 dn 2>/dev/null | grep -q 'dn:'"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+    restart: unless-stopped
+
   keycloak:
-    image: quay.io/keycloak/keycloak:24
-    container_name: it-stack-iredmail-keycloak
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: iredmail-sso-keycloak
     command: start-dev
     environment:
       KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_ADMIN_PASSWORD: Lab04Admin!
+      KC_HTTP_PORT: "8080"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_PROXY: edge
     ports:
-      - "8080:8080"
+      - "8087:8080"
     networks:
-      - it-stack-net
+      - mail-app-net
+      - mail-dir-net
+    depends_on:
+      ldap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready | grep -q UP"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+    restart: unless-stopped
+
+  smtp-relay:
+    image: mailhog/mailhog:v1.0.1
+    container_name: iredmail-sso-smtp-relay
+    ports:
+      - "8025:8025"
+    networks:
+      - mail-app-net
+    restart: unless-stopped
+
+  iredmail:
+    image: iredmail/mariadb:stable
+    container_name: iredmail-sso-app
+    hostname: mail.lab.local
+    ports:
+      - "9080:80"
+      - "9443:443"
+      - "9025:25"
+      - "9587:587"
+      - "9143:143"
+      - "9993:993"
+    environment:
+      FIRST_MAIL_DOMAIN: lab.local
+      FIRST_MAIL_DOMAIN_ADMIN_PASSWORD: Lab04Password!
+      MLMMJADMIN_API_TOKEN: Lab04Token!
+      ROUNDCUBE_DES_KEY: Lab04RoundcubeDesKey01
+      LDAP_SERVER_HOST: ldap
+      LDAP_SERVER_PORT: "389"
+      LDAP_BIND_DN: "cn=readonly,dc=lab,dc=local"
+      LDAP_BIND_PASSWORD: ReadOnlyPass04!
+      LDAP_BASE_DN: "dc=lab,dc=local"
+      ENABLE_DKIM: "1"
+      DKIM_SELECTOR: lab
+      POSTFIX_RELAYHOST: "[smtp-relay]:1025"
+    volumes:
+      - iredmail_sso_data:/var/vmail
+      - iredmail_sso_db:/var/lib/mysql
+      - iredmail_sso_ssl:/opt/iredmail/ssl
+      - iredmail_sso_dkim:/opt/dkim
+    networks:
+      - mail-app-net
+      - mail-dir-net
+    depends_on:
+      ldap:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/mail/ | grep -qi 'roundcube\\|webmail\\|login'"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    restart: unless-stopped
+
+volumes:
+  ldap_sso_db:
+  ldap_sso_config:
+  iredmail_sso_data:
+  iredmail_sso_db:
+  iredmail_sso_ssl:
+  iredmail_sso_dkim:
 
 networks:
-  it-stack-net:
-    driver: bridge
+  mail-app-net:
+  mail-dir-net:
