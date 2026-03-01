@@ -1,53 +1,193 @@
-# Lab 06 — Production: iredmail HA-ready with monitoring and external volumes
----
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
-  iredmail:
-    image: iredmail/iredmail:stable
-    container_name: it-stack-iredmail
+  iredmail-prod-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: iredmail-prod-ldap
     restart: always
-    ports:
-      - "25:$firstPort"
     environment:
-      - IT_STACK_ENV=production
-      - KEYCLOAK_URL=
-      - DB_HOST=
-      - REDIS_HOST=
-      - GRAYLOG_HOST=
+      LDAP_ORGANISATION: "IT-Stack Production"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapProd06!
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnlyProd06!
+    ports:
+      - "3897:389"
     volumes:
-      - iredmail_data:/var/lib/iredmail
-      - /etc/ssl/certs:/etc/ssl/certs:ro
+      - iredmail-prod-ldap-data:/var/lib/ldap
+      - iredmail-prod-ldap-config:/etc/ldap/slapd.d
+    networks:
+      - iredmail-prod-net
     deploy:
-      replicas: 1
       resources:
         limits:
-          cpus: "4.0"
-          memory: G
-        reservations:
-          cpus: "1.0"
-          memory: 1G
-      restart_policy:
-        condition: any
-        delay: 5s
-    logging:
-      driver: gelf
-      options:
-        gelf-address: "udp://${GRAYLOG_HOST}:12201"
-        tag: "it-stack-iredmail"
+          memory: 256m
+          cpus: "0.5"
+    logging: *default-logging
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapProd06! > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  iredmail-prod-keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: iredmail-prod-keycloak
+    restart: always
+    command: start-dev
+    environment:
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Prod06Admin!
+    ports:
+      - "8208:8080"
+    networks:
+      - iredmail-prod-net
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready | grep -q UP || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  iredmail-prod-db:
+    image: mariadb:10.11
+    container_name: iredmail-prod-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: Prod06Password!
+      MYSQL_DATABASE: vmail
+      MYSQL_USER: vmail
+      MYSQL_PASSWORD: Prod06Password!
+    volumes:
+      - iredmail-prod-db-data:/var/lib/mysql
+    networks:
+      - iredmail-prod-db-net
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pProd06Password!"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  iredmail-prod-clamav:
+    image: clamav/clamav:1.3
+    container_name: iredmail-prod-clamav
+    restart: always
+    volumes:
+      - iredmail-prod-clamav:/var/lib/clamav
+    networks:
+      - iredmail-prod-net
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "clamdtop", "-n"]
+      interval: 60s
       timeout: 10s
       retries: 3
       start_period: 120s
-    networks:
-      - it-stack-net
 
-networks:
-  it-stack-net:
-    external: true
-    name: it-stack-production
+  iredmail-prod-smtp-relay:
+    image: mailhog/mailhog:latest
+    container_name: iredmail-prod-smtp-relay
+    restart: always
+    ports:
+      - "9026:1025"
+      - "8027:8025"
+    networks:
+      - iredmail-prod-net
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    logging: *default-logging
+
+  iredmail-prod-app:
+    image: iredmail/mariadb:stable
+    container_name: iredmail-prod-app
+    restart: always
+    depends_on:
+      iredmail-prod-db:
+        condition: service_healthy
+      iredmail-prod-ldap:
+        condition: service_healthy
+      iredmail-prod-keycloak:
+        condition: service_healthy
+    environment:
+      HOSTNAME: mail.lab.local
+      FIRST_MAIL_DOMAIN: lab.local
+      FIRST_MAIL_DOMAIN_ADMIN_PASSWORD: Prod06Password!
+      MYSQL_ROOT_PASSWORD: Prod06Password!
+      LDAP_SERVER_HOST: iredmail-prod-ldap
+      LDAP_SERVER_PORT: "389"
+      LDAP_BIND_USER: "cn=admin,dc=lab,dc=local"
+      LDAP_BIND_PASSWORD: LdapProd06!
+      LDAP_BASEDN: "dc=lab,dc=local"
+      OIDC_CLIENT_ID: iredmail-client
+      OIDC_CLIENT_SECRET: iredmail-prod-06
+      OIDC_ISSUER: http://iredmail-prod-keycloak:8080/realms/it-stack
+      SOGO_LISTEN_ADDRESS: "0.0.0.0"
+    ports:
+      - "9280:80"
+      - "9380:443"
+      - "9588:587"
+      - "9144:143"
+      - "9994:993"
+    volumes:
+      - iredmail-prod-vmail:/var/vmail
+      - iredmail-prod-backup:/var/vmail/backup
+      - iredmail-prod-certs:/etc/ssl/certs/iRedMail.d
+    networks:
+      - iredmail-prod-net
+      - iredmail-prod-db-net
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
+        reservations:
+          memory: 512m
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/mail/ | grep -qi 'SOGo\\|roundcube\\|webmail' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
 
 volumes:
-  iredmail_data:
-    external: true
-    name: it-stack-iredmail-data
+  iredmail-prod-ldap-data:
+  iredmail-prod-ldap-config:
+  iredmail-prod-db-data:
+  iredmail-prod-clamav:
+  iredmail-prod-vmail:
+  iredmail-prod-backup:
+  iredmail-prod-certs:
+
+networks:
+  iredmail-prod-net:
+  iredmail-prod-db-net:
