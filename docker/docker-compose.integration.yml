@@ -1,26 +1,121 @@
-# Lab 05 — Advanced Integration: iredmail with full IT-Stack ecosystem
----
+# docker-compose.integration.yml -- Lab 05: Advanced Integration
+# iRedMail + OpenLDAP (FreeIPA sim) + Keycloak LDAP federation + Mailhog
+# Lab 05 tests: LDAP primary auth, Keycloak LDAP federation, mailbox from LDAP users
+#
+# Ports:
+#   9180 -- iRedMail HTTP admin (Roundcube / SOGo)
+#   9443 -- iRedMail HTTPS
+#   9025 -- SMTP (mailhog relay)
+#   9587 -- SMTP submission
+#   9143 -- IMAP
+#   9993 -- IMAPS
+#   8108 -- Keycloak admin console
+#   3892 -- OpenLDAP
+#   8025 -- Mailhog web UI
+#
+# Credentials:
+#   LDAP admin:    cn=admin,dc=lab,dc=local / LdapAdmin05!
+#   LDAP readonly: cn=readonly,dc=lab,dc=local / ReadOnly05!
+#   Keycloak:      admin / Lab05Admin!
+#   Mail domain:   lab.local / postmaster@lab.local / MailAdmin05!
+
 services:
-  iredmail:
-    image: iredmail/iredmail:stable
-    container_name: it-stack-iredmail
-    restart: unless-stopped
-    ports:
-      - "25:$firstPort"
+  iredmail-int-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: iredmail-int-ldap
     environment:
-      - IT_STACK_ENV=lab-05-integration
-      - KEYCLOAK_URL=
-      - DB_HOST=
-      - REDIS_HOST=
-      - SMTP_HOST=
-      - GRAYLOG_HOST=
-    extra_hosts:
-      - "lab-id1:10.0.50.11"
-      - "lab-db1:10.0.50.12"
-      - "lab-proxy1:10.0.50.15"
+      LDAP_ORGANISATION: "IT-Stack Lab"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapAdmin05!
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnly05!
+    ports:
+      - "3892:389"
     networks:
-      - it-stack-net
+      - mail-int-dir-net
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapAdmin05! > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  iredmail-int-keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: iredmail-int-keycloak
+    command: start-dev
+    environment:
+      KC_HEALTH_ENABLED: "true"
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Lab05Admin!
+    ports:
+      - "8108:8080"
+    networks:
+      - mail-int-app-net
+      - mail-int-dir-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready | grep -q UP || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  iredmail-int-smtp-relay:
+    image: mailhog/mailhog:latest
+    container_name: iredmail-int-smtp-relay
+    ports:
+      - "8025:8025"
+      - "9025:1025"
+    networks:
+      - mail-int-app-net
+
+  iredmail-int-app:
+    image: iredmail/mariadb:stable
+    container_name: iredmail-int-app
+    depends_on:
+      iredmail-int-ldap:
+        condition: service_healthy
+      iredmail-int-keycloak:
+        condition: service_healthy
+    environment:
+      HOSTNAME: mail.lab.local
+      FIRST_MAIL_DOMAIN: lab.local
+      FIRST_MAIL_DOMAIN_ADMIN_PASSWORD: MailAdmin05!
+      MLMMJADMIN_API_TOKEN: MailApiToken05!
+      ROUNDCUBE_DES_KEY: RoundcubeKey05xyz!
+      LDAP_SERVER_HOST: iredmail-int-ldap
+      LDAP_SERVER_PORT: "389"
+      LDAP_BIND_DN: "cn=readonly,dc=lab,dc=local"
+      LDAP_BIND_PASSWORD: ReadOnly05!
+      LDAP_BASEDN: "dc=lab,dc=local"
+      RELAY_HOST: iredmail-int-smtp-relay
+      RELAY_PORT: "1025"
+    ports:
+      - "9180:80"
+      - "9443:443"
+      - "9587:587"
+      - "9143:143"
+      - "9993:993"
+    volumes:
+      - iredmail-int-data:/var/vmail
+      - iredmail-int-db:/var/lib/mysql
+      - iredmail-int-clamav:/var/lib/clamav
+    networks:
+      - mail-int-app-net
+      - mail-int-dir-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/mail/"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  iredmail-int-data:
+  iredmail-int-db:
+  iredmail-int-clamav:
 
 networks:
-  it-stack-net:
-    driver: bridge
+  mail-int-app-net:
+  mail-int-dir-net:
