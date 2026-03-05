@@ -173,7 +173,7 @@ services:
           memory: 512m
     logging: *default-logging
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:80/mail/ | grep -qi 'SOGo\\|roundcube\\|webmail' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/mail/ | grep -qi 'SOGo\|roundcube\|webmail' || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 10
